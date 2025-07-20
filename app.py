@@ -47,10 +47,8 @@ input_df = input_df[features]
 risk_prob = model.predict_proba(input_df)[0][1]
 st.subheader(f"🔥 Predicted Fire Risk Probability: {risk_prob:.2%}")
 
-# 4. 📄 Load Merged Dataset
+# 4. 📄 Load Dataset
 df = pd.read_csv("merged_fire_incidents_with_hydrants.csv")
-
-# 5. 🧠 Predict risk for each incident in the dataset (Safe + Smart Fixes)
 
 # Try to generate missing model features
 if 'date_time_reported' in df.columns:
@@ -61,60 +59,73 @@ if 'date_time_reported' in df.columns:
 if 'Hydrant_Status' in df.columns:
     df['Hydrant_Status_Code'] = df['Hydrant_Status'].astype('category').cat.codes
 
-# Simulate satellite risk score if not present
 if 'satellite_risk_score' not in df.columns:
     df['satellite_risk_score'] = np.random.uniform(0, 1, size=len(df))
 
-# Fill missing traffic/road condition with defaults
 df['traffic_level'] = df.get('traffic_level', 'Moderate')
 df['road_condition'] = df.get('road_condition', 'Good')
 
-# Create dummy model input
-model_input = df.copy()
-model_input = pd.get_dummies(model_input)
-
-# Align input columns with training features
+# 🧠 Predict for Dataset
+model_input = pd.get_dummies(df)
 for col in features:
     if col not in model_input.columns:
         model_input[col] = 0
 model_input = model_input[features]
-
-# Predict fire risk
 df['predicted_risk'] = model.predict_proba(model_input)[:, 1]
 
-# 6. 🗺 Display Map
-st.subheader("📍 Fire Incidents & Hydrant Map (from merged file)")
-map_center = [df['Hydrant_Latitude'].mean(), df['Hydrant_Longitude'].mean()]
-m = folium.Map(location=map_center, zoom_start=13)
+# 5. 📍 Nearest Hydrant Logic
+hydrant_locs = df[['Hydrant_Latitude', 'Hydrant_Longitude']].dropna().drop_duplicates().values.tolist()
 
-cluster = MarkerCluster(name="Fire Points").add_to(m)
-for _, row in df.iterrows():
+def get_nearest_hydrant(lat, lon, hydrants):
+    try:
+        return min(
+            ((h_lat, h_lon, geodesic((lat, lon), (h_lat, h_lon)).meters)
+             for h_lat, h_lon in hydrants),
+            key=lambda x: x[2]
+        )
+    except:
+        return (None, None, None)
+
+df['Nearest_Hydrant_Dist_M'] = df.apply(lambda row: (
+    get_nearest_hydrant(row['Hydrant_Latitude'], row['Hydrant_Longitude'], hydrant_locs)[2]
+    if pd.notnull(row['Hydrant_Latitude']) and pd.notnull(row['Hydrant_Longitude'])
+    else None
+), axis=1)
+
+# 6. 🗺 Map with Satellite Option
+st.subheader("🗺 Fire & Hydrant Map")
+map_style = st.selectbox("🛰 Select Map Tile", ['OpenStreetMap', 'Stamen Terrain', 'Stamen Toner', 'CartoDB Positron', 'CartoDB Dark_Matter'])
+
+map_df = df.dropna(subset=['Hydrant_Latitude', 'Hydrant_Longitude'])
+map_center = [map_df['Hydrant_Latitude'].mean(), map_df['Hydrant_Longitude'].mean()]
+m = folium.Map(location=map_center, zoom_start=13, tiles=map_style)
+
+cluster = MarkerCluster().add_to(m)
+for _, row in map_df.iterrows():
+    popup_content = f"Barangay: {row['barangay']}<br>Risk: {row['predicted_risk']:.2%}<br>Damage: ₱{row['estimated_damage']:,}<br>Nearest Hydrant: {row['Nearest_Hydrant_Dist_M']:.2f} m" if pd.notnull(row['Nearest_Hydrant_Dist_M']) else "No hydrant location"
     folium.Marker(
         [row['Hydrant_Latitude'], row['Hydrant_Longitude']],
         icon=folium.Icon(color='red', icon='fire', prefix='fa'),
-        popup=f"Barangay: {row['barangay']}<br>Risk: {row['predicted_risk']:.2%}<br>Damage: ₱{row['estimated_damage']:,}"
+        popup=popup_content
     ).add_to(cluster)
 
 st_folium(m, width=1000, height=500)
 
-# 7. 📊 Risk Score Table by Barangay (based on model prediction)
-st.subheader("📍 Fire Risk Summary by Barangay (Predicted)")
-
+# 7. 📊 Risk Table
+st.subheader("📊 Risk Score by Barangay")
 if 'barangay' in df.columns:
-    brgy_summary = df.groupby('barangay').agg({
+    summary = df.groupby('barangay').agg({
         'predicted_risk': 'mean',
         'estimated_damage': 'max',
+        'Nearest_Hydrant_Dist_M': 'mean',
         'barangay': 'count'
-    }).rename(columns={'barangay': 'incident_count'}).reset_index()
-
-    brgy_summary['predicted_risk'] = brgy_summary['predicted_risk'].round(4)
-    brgy_summary = brgy_summary.sort_values(by='predicted_risk', ascending=False)
-
-    st.dataframe(brgy_summary.rename(columns={
+    }).rename(columns={'barangay': 'Incident_Count'}).reset_index()
+    summary['predicted_risk'] = summary['predicted_risk'].round(4)
+    summary['Nearest_Hydrant_Dist_M'] = summary['Nearest_Hydrant_Dist_M'].round(2)
+    summary = summary.sort_values(by='predicted_risk', ascending=False)
+    st.dataframe(summary.rename(columns={
         'barangay': 'Barangay',
         'predicted_risk': 'Avg Risk Probability',
-        'estimated_damage': 'Max Damage (₱)',
-        'incident_count': 'Incident Count'
+        'estimated_damage': 'Max Damage',
+        'Nearest_Hydrant_Dist_M': 'Avg Distance to Hydrant (m)'
     }))
-else:
-    st.warning("⚠️ 'barangay' column not found in data.")
