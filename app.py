@@ -1,90 +1,84 @@
+
 import streamlit as st
 import pandas as pd
+import numpy as np
 import joblib
 import folium
-from streamlit_folium import folium_static
 from folium.plugins import MarkerCluster
+from streamlit_folium import st_folium
+from geopy.distance import geodesic
 
 # Load model and features
-model = joblib.load("best_fire_risk_model.pkl")
-features = joblib.load("model_features.pkl")
+model = joblib.load("best_fire_risk_model_prob.pkl")
+features = joblib.load("model_features_prob.pkl")
 
-st.title("🔥 Sta. Cruz Fire Risk Dashboard")
-st.markdown("Predict fire outbreak risk, view hydrant maps, and track barangay risk scores.")
+st.set_page_config(page_title="🔥 Fire Risk Dashboard", layout="wide")
+st.title("🔥 Fire Outbreak Prediction and Hydrant Map Dashboard")
 
-# --- Section 1: Fire Risk Prediction ---
-st.header("📣 Fire Risk Prediction")
-with st.form("prediction_form"):
-    temp = st.slider("Temperature (°C)", 20, 50, 34)
-    traffic = st.selectbox("Traffic Level", ["Light", "Moderate", "Heavy"])
-    road = st.selectbox("Road Condition", ["Dry", "Wet", "Obstructed"])
-    hydrant_status = st.selectbox("Nearest Hydrant Status", {
-        "Operational": 2,
-        "Low Pressure": 1,
-        "Non-Operational": 0,
-        "Damaged": -1,
-        "No Hydrant": -2
-    })
-    hour = st.slider("Hour of Report", 0, 23, 14)
-    day = st.selectbox("Day of the Week", ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"])
-    submit = st.form_submit_button("Predict")
+# 1. 📥 User Inputs
+st.sidebar.header("Input Parameters")
+temperature = st.sidebar.slider("Temperature (°C)", 20, 50, 35)
+traffic = st.sidebar.selectbox("Traffic Level", ['Low', 'Moderate', 'High'])
+road = st.sidebar.selectbox("Road Condition", ['Good', 'Fair', 'Poor'])
+hydrant_status = st.sidebar.selectbox("Hydrant Status", ['Active', 'Damaged', 'Inactive'])
+hour = st.sidebar.slider("Report Hour (0-23)", 0, 23, 14)
+day_of_week = st.sidebar.selectbox("Day of the Week", list(range(7)))
+satellite_score = st.sidebar.slider("Satellite Risk Score", 0.0, 1.0, 0.5, 0.01)
 
-if submit:
-    day_map = {"Monday": 0, "Tuesday":1, "Wednesday":2, "Thursday":3, "Friday":4, "Saturday":5, "Sunday":6}
-    input_df = pd.DataFrame([{
-        'temperature_c': temp,
-        'traffic_level': traffic,
-        'road_condition': road,
-        'Hydrant_Status_Code': hydrant_status,
-        'report_hour': hour,
-        'day_of_week': day_map[day]
-    }])
-    input_df = pd.get_dummies(input_df)
-    for col in features:
-        if col not in input_df.columns:
-            input_df[col] = 0
-    input_df = input_df[features]
-
-    prediction = model.predict(input_df)[0]
-    st.success("🔥 High Risk" if prediction == 1 else "✅ Low Risk")
-
-# --- Section 2: Map of Hydrants and Incidents ---
-st.header("🗺 Hydrant and Fire Incident Map")
-
-data = pd.read_csv("merged_fire_incidents_with_hydrants.csv")
-m = folium.Map(location=[14.28, 121.42], zoom_start=13)
-cluster = MarkerCluster().add_to(m)
-
-for _, row in data.iterrows():
-    if pd.notnull(row['Hydrant_Latitude']):
-        folium.Marker(
-            location=[row['Hydrant_Latitude'], row['Hydrant_Longitude']],
-            popup=f"{row['barangay'].title()} - Hydrant: {row['Hydrant_Status']}",
-            icon=folium.Icon(color="blue", icon="tint")
-        ).add_to(cluster)
-
-folium_static(m)
-
-# --- Section 3: Risk Score Leaderboard ---
-st.header("📊 Risk Score by Barangay")
-risk_df = data.copy()
-risk_df['high_risk_area'] = risk_df['estimated_damage'].apply(lambda x: 1 if x >= 500000 else 0)
-
-risk_summary = risk_df.groupby('barangay').agg({
-    'estimated_damage': 'mean',
-    'high_risk_area': 'sum',
-    'Matched_Hydrant_ID': 'count'
-}).rename(columns={
-    'estimated_damage': 'avg_damage',
-    'high_risk_area': 'fire_count',
-    'Matched_Hydrant_ID': 'hydrant_count'
+# 2. 📊 Prepare Input for Prediction
+input_df = pd.DataFrame({
+    'temperature_c': [temperature],
+    'traffic_level': [traffic],
+    'road_condition': [road],
+    'Hydrant_Status_Code': [hydrant_status],
+    'report_hour': [hour],
+    'day_of_week': [day_of_week],
+    'satellite_risk_score': [satellite_score]
 })
 
-risk_summary['risk_score'] = (
-    (risk_summary['fire_count'] / risk_summary['fire_count'].max()) * 0.4 +
-    (risk_summary['avg_damage'] / risk_summary['avg_damage'].max()) * 0.5 -
-    (risk_summary['hydrant_count'] / risk_summary['hydrant_count'].max()) * 0.3
-)
+# Convert categorical to dummies
+input_df = pd.get_dummies(input_df)
+for col in features:
+    if col not in input_df.columns:
+        input_df[col] = 0
+input_df = input_df[features]
 
-risk_summary = risk_summary.sort_values('risk_score', ascending=False).reset_index()
-st.dataframe(risk_summary)
+# 3. 🔮 Predict Fire Risk Probability
+risk_prob = model.predict_proba(input_df)[0][1]
+st.subheader(f"🔥 Predicted Fire Risk Probability: {risk_prob:.2%}")
+
+# 4. 🗺 Load Hydrant and Incident Data
+hydrants_df = pd.read_csv("hydrants_with_coords.csv")
+incidents_df = pd.read_csv("fire_incidents.csv")
+
+# 5. 🗺 Display Map
+st.subheader("📍 Fire Hydrants & Incidents Map")
+map_center = [hydrants_df['Hydrant_Latitude'].mean(), hydrants_df['Hydrant_Longitude'].mean()]
+m = folium.Map(location=map_center, zoom_start=13)
+
+# Hydrants
+hydrant_cluster = MarkerCluster(name="Hydrants").add_to(m)
+for i, row in hydrants_df.iterrows():
+    folium.Marker(
+        [row['Hydrant_Latitude'], row['Hydrant_Longitude']],
+        icon=folium.Icon(color='blue', icon='tint', prefix='fa'),
+        popup=f"Hydrant ID: {row['Matched_Hydrant_ID']}<br>Status: {row['Hydrant_Status']}"
+    ).add_to(hydrant_cluster)
+
+# Incidents
+incident_cluster = MarkerCluster(name="Fire Incidents").add_to(m)
+for i, row in incidents_df.iterrows():
+    folium.Marker(
+        [row['latitude'], row['longitude']],
+        icon=folium.Icon(color='red', icon='fire', prefix='fa'),
+        popup=f"Barangay: {row['barangay']}<br>Damage: ₱{row['estimated_damage']:,.0f}"
+    ).add_to(incident_cluster)
+
+st_folium(m, width=1000, height=500)
+
+# 6. 📊 Risk Score Table by Barangay
+if 'barangay' in incidents_df.columns:
+    grouped = incidents_df.groupby('barangay')['estimated_damage'].mean().reset_index()
+    grouped['fire_risk_probability'] = grouped['estimated_damage'].apply(lambda x: min(x / 1000000, 1.0))
+    st.subheader("📍 Risk Score by Barangay (Simulated Probabilities)")
+    st.dataframe(grouped.sort_values(by='fire_risk_probability', ascending=False).reset_index(drop=True))
