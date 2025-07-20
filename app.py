@@ -50,12 +50,24 @@ st.subheader(f"🔥 Predicted Fire Risk Probability: {risk_prob:.2%}")
 # 4. 📄 Load Merged Dataset
 df = pd.read_csv("merged_fire_incidents_with_hydrants.csv")
 
-# 5. 🧠 Predict risk for each incident in the dataset
+# 5. 🧠 Predict risk for each incident in the dataset (Safe version)
+
+# ✅ Show available columns for debugging (optional)
+st.write("📋 Columns in dataset:", df.columns.tolist())
+
+# ✅ Check if required features are present
+missing_cols = [col for col in features if col not in df.columns]
+if missing_cols:
+    st.error(f"🚫 The following required columns are missing in your dataset: {missing_cols}")
+    st.stop()
+
+# ✅ Continue prediction safely
 model_input = pd.get_dummies(df[features])
 for col in features:
     if col not in model_input.columns:
         model_input[col] = 0
 model_input = model_input[features]
+
 df['predicted_risk'] = model.predict_proba(model_input)[:, 1]
 
 # 6. 🗺 Display Map
