@@ -43,7 +43,14 @@ for col in features:
         input_df[col] = 0
 input_df = input_df[features]
 
-# 3. 🔮 Predict Fire Risk Probability
+
+# 3. 🔘 Predict Fire Risk Probability on Button Click
+if st.sidebar.button("🔍 Predict Fire Risk"):
+    risk_prob = model.predict_proba(input_df)[0][1]
+    st.subheader(f"🔥 Predicted Fire Risk Probability: {risk_prob:.2%}")
+else:
+    st.subheader("🔥 Adjust parameters on the left, then click 'Predict Fire Risk' to see results.")
+
 risk_prob = model.predict_proba(input_df)[0][1]
 st.subheader(f"🔥 Predicted Fire Risk Probability: {risk_prob:.2%}")
 
